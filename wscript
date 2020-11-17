@@ -375,6 +375,12 @@ iconv support use --disable-iconv.",
         'name': '--dvbin',
         'desc': 'DVB input module',
         'deps': 'gpl',
+        'func': check_pkg_config('libdvbv5'),
+        'default': 'disable',
+    }, {
+        'name': '--dvbv5',
+        'desc': 'DVBv5 input module',
+        'deps': 'gpl',
         'func': check_true,
         'default': 'disable',
     }, {
