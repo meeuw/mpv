@@ -1,4 +1,3 @@
-#include "osdep/io.h"
 #include "misc/ctype.h"
 #include "osdep/timer.h"
 
@@ -28,6 +27,7 @@ typedef struct dvbv5_opts {
     int cfg_adapter;
     int cfg_frontend;
     int cfg_demux;
+    char* cfg_cc;
 } dvbv5_opts_t;
 
 typedef struct {
@@ -42,6 +42,7 @@ const struct m_sub_options stream_dvbv5_conf = {
         {"adapter", OPT_INT(cfg_adapter), M_RANGE(0, 100)},
         {"frontend", OPT_INT(cfg_frontend), M_RANGE(0, 100)},
         {"demux", OPT_INT(cfg_demux), M_RANGE(0, 100)},
+        {"cc", OPT_STRING(cfg_cc)},
         {0}
     },
     .size = sizeof(struct dvbv5_opts),
@@ -49,6 +50,7 @@ const struct m_sub_options stream_dvbv5_conf = {
         .cfg_adapter = 0,
         .cfg_frontend = 0,
         .cfg_demux = 0,
+        .cfg_cc = NULL,
     },
 };
 
@@ -61,7 +63,6 @@ static int check_frontend(stream_t *stream, struct dvb_v5_fe_parms *parms)
         rc = dvb_fe_get_stats(parms);
         if (rc) {
             MP_ERR(stream, "dvb_fe_get_stats failed");
-            printf("usleep\n");
             usleep(1000000);
             continue;
         }
@@ -221,10 +222,6 @@ static int parse(stream_t *stream, struct dvb_v5_fe_parms *parms,
         for (ii = 0; ii < entry->other_el_pid_len; ii++) {
             if (type != entry->other_el_pid[ii].type) {
                 type = entry->other_el_pid[ii].type;
-                if (ii)
-                    printf("\n");
-                printf("service has pid type %02x: \n", type);
-
             }
         }
     }
@@ -289,7 +286,6 @@ static int dvbv5_open(stream_t *stream)
     char *demux_dev, *dvr_dev, *dvr_fname;
     unsigned diseqc_wait = 0, freq_bpf = 0;
     int lna = 0;
-    const char *cc = "NL"; // FIXME
     struct dvb_open_descriptor *dvr_fd = NULL;
     struct dvb_open_descriptor *audio_fd = NULL, *video_fd = NULL;
     int vpid = -1, apid = -1, sid = -1;
@@ -349,7 +345,7 @@ static int dvbv5_open(stream_t *stream)
     parms->lna = lna;
 
 
-    dvb_fe_set_default_country(parms, cc);
+    dvb_fe_set_default_country(parms, priv->opts->cfg_cc);
 
     if (parse(stream, parms, &vpid, &apid, &sid)) {
         dvb_dev_free(dvb);
