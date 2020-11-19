@@ -4,8 +4,8 @@
 
 #include "stream.h"
 #include "common/tags.h"
-#include "options/m_config.h"
 #include "options/m_option.h"
+#include "options/m_config.h"
 #include "options/options.h"
 #include "options/path.h"
 
@@ -23,49 +23,34 @@
 
 #define DVB_BUF_SIZE    (4096 * 8 * 188)
 
-#define OPT_BASE_STRUCT dvb_opts_t
 
-typedef struct {
-    char *cfg_prog;
-//    int cfg_devno;
-//    int cfg_timeout;
-//    char *cfg_file;
-//    int cfg_full_transponder;
-//    int cfg_channel_switch_offset;
-} dvb_opts_t;
+typedef struct dvbv5_opts {
+    int cfg_adapter;
+    int cfg_frontend;
+    int cfg_demux;
+} dvbv5_opts_t;
 
 typedef struct {
     struct dvb_open_descriptor *dvr_fd;
-    dvb_opts_t *opts;
+    dvbv5_opts_t *opts;
     struct m_config_cache *opts_cache;
-    char *channel;
 } dvb_priv_t;
 
+#define OPT_BASE_STRUCT struct dvbv5_opts
 const struct m_sub_options stream_dvbv5_conf = {
     .opts = (const m_option_t[]) {
-        {"prog", OPT_STRING(cfg_prog)},
+        {"adapter", OPT_INT(cfg_adapter), M_RANGE(0, 100)},
+        {"frontend", OPT_INT(cfg_frontend), M_RANGE(0, 100)},
+        {"demux", OPT_INT(cfg_demux), M_RANGE(0, 100)},
         {0}
     },
-    .size = sizeof(dvb_opts_t),
-    .defaults = &(const dvb_opts_t){
-        .cfg_prog = NULL,
-//        .cfg_devno = 0,
-//        .cfg_timeout = 30,
+    .size = sizeof(struct dvbv5_opts),
+    .defaults = &(const dvbv5_opts_t){
+        .cfg_adapter = 0,
+        .cfg_frontend = 0,
+        .cfg_demux = 0,
     },
 };
-
-static int dvb_parse_path(stream_t *stream)
-{
-    dvb_priv_t *priv = stream->priv;
-
-    bstr channel, devno;
-    if (!bstr_split_tok(bstr0(stream->path), "@", &devno, &channel)) {
-        channel = devno;
-        devno.len = 0;
-    }
-    priv->channel = bstrto0(priv, channel);
-    return 1;
-}
 
 static int check_frontend(stream_t *stream, struct dvb_v5_fe_parms *parms)
 {
@@ -139,9 +124,7 @@ static int parse(stream_t *stream, struct dvb_v5_fe_parms *parms,
     char *channel;
     enum dvb_file_formats input_format;
     unsigned n_apid = 0, n_vpid = 0;
-    dvb_priv_t *priv = NULL;
-    priv = stream->priv;
-    channel = priv->channel;
+    channel = stream->path;
 
     input_format = dvb_parse_format("DVBV5");
 
@@ -247,9 +230,12 @@ static int parse(stream_t *stream, struct dvb_v5_fe_parms *parms,
     }
     *sid = entry->service_id;
 
-        /* First of all, set the delivery system */
+    /* First of all, set the delivery system */
     dvb_retrieve_entry_prop(entry, DTV_DELIVERY_SYSTEM, &sys);
-    dvb_set_compat_delivery_system(parms, sys);
+    if (dvb_set_compat_delivery_system(parms, sys)) {
+        MP_ERR(stream, "dvb_set_compat_delivery_system failed\n");
+        return -4;
+    }
 
     /* Copy data into parms */
     for (i = 0; i < entry->n_props; i++) {
@@ -302,9 +288,8 @@ static int dvbv5_open(stream_t *stream)
     static int verbose = 0;
     char *demux_dev, *dvr_dev, *dvr_fname;
     unsigned diseqc_wait = 0, freq_bpf = 0;
-    unsigned adapter = 0, frontend = 1, demux = 0;
     int lna = 0;
-    const char *cc = "NL";
+    const char *cc = "NL"; // FIXME
     struct dvb_open_descriptor *dvr_fd = NULL;
     struct dvb_open_descriptor *audio_fd = NULL, *video_fd = NULL;
     int vpid = -1, apid = -1, sid = -1;
@@ -312,6 +297,8 @@ static int dvbv5_open(stream_t *stream)
     dvb_priv_t *priv = NULL;
     stream->priv = talloc_zero(stream, dvb_priv_t);
     priv = stream->priv;
+    priv->opts_cache = m_config_cache_alloc(stream, stream->global, &stream_dvbv5_conf);
+    priv->opts = priv->opts_cache->opts;
 
     stream->fill_buffer = dvbv5_streaming_read;
     stream->close = dvbv5_close;
@@ -330,7 +317,7 @@ static int dvbv5_open(stream_t *stream)
     dvb_dev_find(dvb, NULL, NULL);
     parms = dvb->fe_parms;
 
-    dvb_dev = dvb_dev_seek_by_adapter(dvb, adapter, demux, DVB_DEVICE_DEMUX); // FIXME adapter/demux
+    dvb_dev = dvb_dev_seek_by_adapter(dvb, priv->opts->cfg_adapter, priv->opts->cfg_demux, DVB_DEVICE_DEMUX);
     if (!dvb_dev) {
         dvb_dev_free(dvb);
         return STREAM_ERROR;
@@ -338,7 +325,7 @@ static int dvbv5_open(stream_t *stream)
 
     demux_dev = dvb_dev->sysname;
 
-    dvb_dev = dvb_dev_seek_by_adapter(dvb, adapter, demux, DVB_DEVICE_DVR); // TODO adapter/demux
+    dvb_dev = dvb_dev_seek_by_adapter(dvb, priv->opts->cfg_adapter, priv->opts->cfg_demux, DVB_DEVICE_DVR);
     if (!dvb_dev) {
         dvb_dev_free(dvb);
         return STREAM_ERROR;
@@ -346,9 +333,11 @@ static int dvbv5_open(stream_t *stream)
     dvr_dev = dvb_dev->sysname;
     dvr_fname = dvb_dev->path;
 
-    dvb_dev = dvb_dev_seek_by_adapter(dvb, adapter, frontend, DVB_DEVICE_FRONTEND);
-    if (!dvb_dev)
-        return -1;
+    dvb_dev = dvb_dev_seek_by_adapter(dvb, priv->opts->cfg_adapter, priv->opts->cfg_frontend, DVB_DEVICE_FRONTEND);
+    if (!dvb_dev) {
+        dvb_dev_free(dvb);
+        return STREAM_ERROR;
+    }
 
     if (!dvb_dev_open(dvb, dvb_dev->sysname, O_RDWR)) {
         dvb_dev_free(dvb);
@@ -361,11 +350,6 @@ static int dvbv5_open(stream_t *stream)
 
 
     dvb_fe_set_default_country(parms, cc);
-
-    if (!dvb_parse_path(stream)) {
-        dvb_dev_free(dvb);
-        return STREAM_ERROR;
-    }
 
     if (parse(stream, parms, &vpid, &apid, &sid)) {
         dvb_dev_free(dvb);
@@ -419,8 +403,6 @@ static int dvbv5_open(stream_t *stream)
     }
 
     priv->dvr_fd = dvr_fd;
-    //priv->opts_cache = m_config_cache_alloc(stream, stream->global, &stream_dvbv5_conf);
-    //priv->opts = priv->opts_cache->opts;
 
     return STREAM_OK;
 }
