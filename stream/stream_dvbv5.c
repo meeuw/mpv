@@ -99,10 +99,18 @@ void dvbv5_close(stream_t *stream)
 static int dvbv5_stream_control(struct stream *s, int cmd, void *arg)
 {
     MP_ERR(s, "stream control");
+    switch (cmd) {
+    case STREAM_CTRL_GET_METADATA: {
+        struct mp_tags *metadata = talloc_zero(NULL, struct mp_tags);
+        char *progname = s->path;
+        mp_tags_set_str(metadata, "title", progname);
+        *(struct mp_tags **)arg = metadata;
+        return STREAM_OK;
+    }
+    }
     return STREAM_UNSUPPORTED;
 }
 
-// copy_to_file from dvbv5-zap.c
 static int dvbv5_streaming_read(stream_t *stream, void *buffer, int size)
 {
     int r, pos = 0;
@@ -116,6 +124,10 @@ static int dvbv5_streaming_read(stream_t *stream, void *buffer, int size)
     return pos;
 }
 
+/*
+ * This function was adapted for MPV from v4l-utils/utils/dvb/dvbv5-zap.c
+ * version v4l-utils-1.20.0-118-g9a628fbc
+ */
 static int parse(stream_t *stream, struct dvb_v5_fe_parms *parms,
          int *vpid, int *apid, int *sid)
 {
@@ -280,6 +292,10 @@ static int parse(stream_t *stream, struct dvb_v5_fe_parms *parms,
     return 0;
 }
 
+/*
+ * This function was adapted for MPV from v4l-utils/utils/dvb/dvbv5-zap.c
+ * version v4l-utils-1.20.0-118-g9a628fbc
+ */
 static int setup_frontend(stream_t *stream, struct dvb_v5_fe_parms *parms)
 {
     int rc;
@@ -293,11 +309,15 @@ static int setup_frontend(stream_t *stream, struct dvb_v5_fe_parms *parms)
     return 0;
 }
 
+/*
+ * This function was adapted for MPV from v4l-utils/utils/dvb/dvbv5-zap.c
+ * version v4l-utils-1.20.0-118-g9a628fbc
+ */
 static int check_frontend(stream_t *stream, struct dvb_v5_fe_parms *parms)
 {
     int rc;
     fe_status_t status = 0;
-    static int timeout_flag = 0;
+    static int timeout_flag = 0; //FIXME
     do {
         rc = dvb_fe_get_stats(parms);
         if (rc) {
@@ -318,6 +338,10 @@ static int check_frontend(stream_t *stream, struct dvb_v5_fe_parms *parms)
 
 
 
+/*
+ * This function was adapted for MPV from v4l-utils/utils/dvb/dvbv5-zap.c
+ * version v4l-utils-1.20.0-118-g9a628fbc
+ */
 static int dvbv5_open(stream_t *stream)
 {
     char *demux_dev, *dvr_dev, *dvr_fname;
