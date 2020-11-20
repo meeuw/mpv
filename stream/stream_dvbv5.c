@@ -1,5 +1,6 @@
 #include "misc/ctype.h"
 #include "osdep/timer.h"
+#include <pthread.h>
 
 #include "stream.h"
 #include "common/tags.h"
@@ -38,6 +39,7 @@ typedef struct dvbv5_opts {
     unsigned cfg_freq_bpf;
     unsigned cfg_port;
     char *cfg_server;
+    unsigned cfg_timeout;
 } dvbv5_opts_t;
 
 typedef struct {
@@ -65,6 +67,7 @@ const struct m_sub_options stream_dvbv5_conf = {
         {"freq_bpf", OPT_INT(cfg_freq_bpf), M_RANGE(0, 9999)},
         {"port", OPT_INT(cfg_port), M_RANGE(0, 65536)},
         {"server", OPT_STRING(cfg_server)},
+        {"timeout", OPT_INT(cfg_timeout), M_RANGE(0, 3600)},
         {0}
     },
     .size = sizeof(struct dvbv5_opts),
@@ -84,8 +87,17 @@ const struct m_sub_options stream_dvbv5_conf = {
         .cfg_freq_bpf = 0,
         .cfg_port = 0,
         .cfg_server = NULL,
+        .cfg_timeout = 120,
     },
 };
+static int timeout_flag = 0;
+
+void *do_timeout(void *priv_ptr) {
+    dvb_priv_t *priv = priv_ptr;
+    usleep(priv->opts->cfg_timeout * 1000000);
+    timeout_flag = 1;
+    return NULL;
+}
 
 void dvbv5_close(stream_t *stream);
 
@@ -317,7 +329,6 @@ static int check_frontend(stream_t *stream, struct dvb_v5_fe_parms *parms)
 {
     int rc;
     fe_status_t status = 0;
-    static int timeout_flag = 0; //FIXME
     do {
         rc = dvb_fe_get_stats(parms);
         if (rc) {
@@ -336,14 +347,13 @@ static int check_frontend(stream_t *stream, struct dvb_v5_fe_parms *parms)
     return status & FE_HAS_LOCK;
 }
 
-
-
 /*
  * This function was adapted for MPV from v4l-utils/utils/dvb/dvbv5-zap.c
  * version v4l-utils-1.20.0-118-g9a628fbc
  */
 static int dvbv5_open(stream_t *stream)
 {
+    pthread_t timeout;
     char *demux_dev, *dvr_dev, *dvr_fname;
     int lnb = -1;
     int vpid = -1, apid = -1, sid = -1;
@@ -381,11 +391,14 @@ static int dvbv5_open(stream_t *stream)
     if (priv->opts->cfg_server && priv->opts->cfg_port) {
         MP_INFO(stream, "Connecting to %s:%d\n", priv->opts->cfg_server, priv->opts->cfg_port);
         ret = dvb_dev_remote_init(dvb, priv->opts->cfg_server, priv->opts->cfg_port);
-        if (ret < 0)
+        if (ret < 0) {
+            MP_ERR(stream, "dvb remote init failed: %i\n", ret);
             return STREAM_ERROR;
+        }
     }
 
     dvb_dev_set_log(dvb, priv->opts->verbose, NULL);
+
     dvb_dev_find(dvb, NULL, NULL);
     parms = dvb->fe_parms;
 
@@ -536,12 +549,16 @@ static int dvbv5_open(stream_t *stream)
         }
     }
 
+    pthread_create(&timeout, NULL, do_timeout, priv);
+
     if (!check_frontend(stream, parms)) {
 
         MP_ERR(stream, "frontend doesn't lock");
         dvb_dev_free(dvb);
         return STREAM_ERROR;
     }
+
+    pthread_cancel(timeout);
 
     dvr_fd = dvb_dev_open(dvb, dvr_dev, O_RDONLY);
     if (!dvr_fd) {
@@ -562,5 +579,3 @@ const stream_info_t stream_info_dvbv5 = {
     .protocols = (const char *const[]){ "dvbv5", NULL },
     .stream_origin = STREAM_ORIGIN_UNSAFE,
 };
-
-// TODO timeouts
