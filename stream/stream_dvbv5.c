@@ -61,7 +61,7 @@ const struct m_sub_options stream_dvbv5_conf = {
         {"verbose", OPT_INT(verbose), M_RANGE(0, 9999)},
         {"pat", OPT_INT(cfg_rec_psi), M_RANGE(0, 1)},
         {"lnb_name", OPT_STRING(cfg_lnb_name)},
-        {"cfg_lna", OPT_INT(cfg_lna), M_RANGE(-1, 1)},
+        {"lna", OPT_INT(cfg_lna), M_RANGE(-1, 1)},
         {"sat_number", OPT_INT(cfg_sat_number), M_RANGE(0, 9999)},
         {"diseqc_wait", OPT_INT(cfg_diseqc_wait), M_RANGE(0, 9999)},
         {"freq_bpf", OPT_INT(cfg_freq_bpf), M_RANGE(0, 9999)},
@@ -398,7 +398,6 @@ static int dvbv5_open(stream_t *stream)
     }
 
     dvb_dev_set_log(dvb, priv->opts->verbose, NULL);
-
     dvb_dev_find(dvb, NULL, NULL);
     parms = dvb->fe_parms;
 
