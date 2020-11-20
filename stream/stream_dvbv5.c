@@ -28,12 +28,23 @@ typedef struct dvbv5_opts {
     int cfg_frontend;
     int cfg_demux;
     char* cfg_cc;
+    int n_vpid, n_apid;
+    int verbose;
+    unsigned cfg_rec_psi;
+    char* cfg_lnb_name;
+    int cfg_lna;
+    int cfg_sat_number;
+    unsigned cfg_diseqc_wait;
+    unsigned cfg_freq_bpf;
+    unsigned cfg_port;
+    char *cfg_server;
 } dvbv5_opts_t;
 
 typedef struct {
     struct dvb_open_descriptor *dvr_fd;
     dvbv5_opts_t *opts;
     struct m_config_cache *opts_cache;
+    struct dvb_device *dvb;
 } dvb_priv_t;
 
 #define OPT_BASE_STRUCT struct dvbv5_opts
@@ -43,6 +54,17 @@ const struct m_sub_options stream_dvbv5_conf = {
         {"frontend", OPT_INT(cfg_frontend), M_RANGE(0, 100)},
         {"demux", OPT_INT(cfg_demux), M_RANGE(0, 100)},
         {"cc", OPT_STRING(cfg_cc)},
+        {"video_pid", OPT_INT(n_vpid), M_RANGE(0, 9999)},
+        {"audio_pid", OPT_INT(n_apid), M_RANGE(0, 9999)},
+        {"verbose", OPT_INT(verbose), M_RANGE(0, 9999)},
+        {"pat", OPT_INT(cfg_rec_psi), M_RANGE(0, 1)},
+        {"lnb_name", OPT_STRING(cfg_lnb_name)},
+        {"cfg_lna", OPT_INT(cfg_lna), M_RANGE(-1, 1)},
+        {"sat_number", OPT_INT(cfg_sat_number), M_RANGE(0, 9999)},
+        {"diseqc_wait", OPT_INT(cfg_diseqc_wait), M_RANGE(0, 9999)},
+        {"freq_bpf", OPT_INT(cfg_freq_bpf), M_RANGE(0, 9999)},
+        {"port", OPT_INT(cfg_port), M_RANGE(0, 65536)},
+        {"server", OPT_STRING(cfg_server)},
         {0}
     },
     .size = sizeof(struct dvbv5_opts),
@@ -51,49 +73,27 @@ const struct m_sub_options stream_dvbv5_conf = {
         .cfg_frontend = 0,
         .cfg_demux = 0,
         .cfg_cc = NULL,
+        .n_vpid = 0,
+        .n_apid = 0,
+        .verbose = 0,
+        .cfg_rec_psi = 0,
+        .cfg_lnb_name = NULL,
+        .cfg_lna = LNA_AUTO,
+        .cfg_sat_number = -1,
+        .cfg_diseqc_wait = 0,
+        .cfg_freq_bpf = 0,
+        .cfg_port = 0,
+        .cfg_server = NULL,
     },
 };
-
-static int check_frontend(stream_t *stream, struct dvb_v5_fe_parms *parms)
-{
-    int rc;
-    fe_status_t status = 0;
-    static int timeout_flag = 0;
-    do {
-        rc = dvb_fe_get_stats(parms);
-        if (rc) {
-            MP_ERR(stream, "dvb_fe_get_stats failed");
-            usleep(1000000);
-            continue;
-        }
-
-        status = 0;
-        rc = dvb_fe_retrieve_stats(parms, DTV_STATUS, &status);
-        if (status & FE_HAS_LOCK)
-            break;
-        usleep(1000000);
-    } while (!timeout_flag);
-
-    return status & FE_HAS_LOCK;
-}
-
-static int setup_frontend(stream_t *stream, struct dvb_v5_fe_parms *parms)
-{
-    int rc;
-
-    rc = dvb_fe_set_parms(parms);
-    if (rc < 0) {
-        MP_ERR(stream, "dvb_fe_set_parms failed");
-        return -1;
-    }
-
-    return 0;
-}
 
 void dvbv5_close(stream_t *stream);
 
 void dvbv5_close(stream_t *stream)
 {
+    dvb_priv_t *priv = stream->priv;
+
+    dvb_dev_free(priv->dvb);
 }
 
 static int dvbv5_stream_control(struct stream *s, int cmd, void *arg)
@@ -124,8 +124,12 @@ static int parse(stream_t *stream, struct dvb_v5_fe_parms *parms,
     char *conf_file;
     char *channel;
     enum dvb_file_formats input_format;
-    unsigned n_apid = 0, n_vpid = 0;
     channel = stream->path;
+    dvb_priv_t *priv;
+    struct dvbv5_opts *args;
+
+    priv = stream->priv;
+    args = priv->opts;
 
     input_format = dvb_parse_format("DVBV5");
 
@@ -159,9 +163,8 @@ static int parse(stream_t *stream, struct dvb_v5_fe_parms *parms,
     talloc_ctx = talloc_new(NULL);
     conf_file = mp_find_config_file(talloc_ctx, global, "channels.conf.dvbv5");
     dvb_file = dvb_read_file_format(conf_file, sys, input_format);
-    if (!dvb_file) {
+    if (!dvb_file)
         return -2;
-    }
 
     for (entry = dvb_file->first_entry; entry != NULL; entry = entry->next) {
         if (entry->channel && !strcmp(entry->channel, channel))
@@ -206,22 +209,22 @@ static int parse(stream_t *stream, struct dvb_v5_fe_parms *parms,
         parms->sat_number = entry->sat_number;
 
     if (entry->video_pid) {
-        if (n_vpid < entry->video_pid_len)
-            *vpid = entry->video_pid[n_vpid];
+        if (args->n_vpid < entry->video_pid_len)
+            *vpid = entry->video_pid[args->n_vpid];
         else
             *vpid = entry->video_pid[0];
     }
     if (entry->audio_pid) {
-        if (n_apid < entry->audio_pid_len)
-            *apid = entry->audio_pid[n_apid];
+        if (args->n_apid < entry->audio_pid_len)
+            *apid = entry->audio_pid[args->n_apid];
         else
         *apid = entry->audio_pid[0];
     }
     if (entry->other_el_pid) {
-        int ii, type = -1;
-        for (ii = 0; ii < entry->other_el_pid_len; ii++) {
-            if (type != entry->other_el_pid[ii].type) {
-                type = entry->other_el_pid[ii].type;
+        int type = -1;
+        for (i = 0; i < entry->other_el_pid_len; i++) {
+            if (type != entry->other_el_pid[i].type) {
+                type = entry->other_el_pid[i].type;
             }
         }
     }
@@ -277,18 +280,58 @@ static int parse(stream_t *stream, struct dvb_v5_fe_parms *parms,
     return 0;
 }
 
+static int setup_frontend(stream_t *stream, struct dvb_v5_fe_parms *parms)
+{
+    int rc;
+
+    rc = dvb_fe_set_parms(parms);
+    if (rc < 0) {
+        MP_ERR(stream, "dvb_fe_set_parms failed");
+        return -1;
+    }
+
+    return 0;
+}
+
+static int check_frontend(stream_t *stream, struct dvb_v5_fe_parms *parms)
+{
+    int rc;
+    fe_status_t status = 0;
+    static int timeout_flag = 0;
+    do {
+        rc = dvb_fe_get_stats(parms);
+        if (rc) {
+            MP_ERR(stream, "dvb_fe_get_stats failed");
+            usleep(1000000);
+            continue;
+        }
+
+        status = 0;
+        rc = dvb_fe_retrieve_stats(parms, DTV_STATUS, &status);
+        if (status & FE_HAS_LOCK)
+            break;
+        usleep(1000000);
+    } while (!timeout_flag);
+
+    return status & FE_HAS_LOCK;
+}
+
+
+
 static int dvbv5_open(stream_t *stream)
 {
-    struct dvb_device *dvb;
-    struct dvb_v5_fe_parms *parms;
-    struct dvb_dev_list *dvb_dev;
-    static int verbose = 0;
     char *demux_dev, *dvr_dev, *dvr_fname;
-    unsigned diseqc_wait = 0, freq_bpf = 0;
-    int lna = 0;
-    struct dvb_open_descriptor *dvr_fd = NULL;
-    struct dvb_open_descriptor *audio_fd = NULL, *video_fd = NULL;
+    int lnb = -1;
     int vpid = -1, apid = -1, sid = -1;
+    int pmtpid = 0;
+    struct dvb_open_descriptor *pat_fd = NULL, *pmt_fd = NULL;
+    struct dvb_open_descriptor *sdt_fd = NULL;
+    struct dvb_open_descriptor *sid_fd = NULL, *dvr_fd = NULL;
+    struct dvb_open_descriptor *audio_fd = NULL, *video_fd = NULL;
+    int r, ret;
+    struct dvb_v5_fe_parms *parms = NULL;
+    struct dvb_device *dvb;
+    struct dvb_dev_list *dvb_dev;
 
     dvb_priv_t *priv = NULL;
     stream->priv = talloc_zero(stream, dvb_priv_t);
@@ -303,13 +346,22 @@ static int dvbv5_open(stream_t *stream)
     stream->demuxer = "lavf";
     stream->lavf_type = "mpegts";
 
-    dvb = dvb_dev_alloc();
-    if (!dvb)
-    {
-        return STREAM_ERROR;
+    if (priv->opts->cfg_lnb_name) {
+        lnb = dvb_sat_search_lnb(priv->opts->cfg_lnb_name);
     }
 
-    dvb_dev_set_log(dvb, verbose, NULL);
+    dvb = dvb_dev_alloc();
+    if (!dvb)
+        return STREAM_ERROR;
+
+    if (priv->opts->cfg_server && priv->opts->cfg_port) {
+        MP_INFO(stream, "Connecting to %s:%d\n", priv->opts->cfg_server, priv->opts->cfg_port);
+        ret = dvb_dev_remote_init(dvb, priv->opts->cfg_server, priv->opts->cfg_port);
+        if (ret < 0)
+            return STREAM_ERROR;
+    }
+
+    dvb_dev_set_log(dvb, priv->opts->verbose, NULL);
     dvb_dev_find(dvb, NULL, NULL);
     parms = dvb->fe_parms;
 
@@ -323,6 +375,7 @@ static int dvbv5_open(stream_t *stream)
 
     dvb_dev = dvb_dev_seek_by_adapter(dvb, priv->opts->cfg_adapter, priv->opts->cfg_demux, DVB_DEVICE_DVR);
     if (!dvb_dev) {
+        MP_ERR(stream, "Couldn't find dvr device node\n");
         dvb_dev_free(dvb);
         return STREAM_ERROR;
     }
@@ -330,22 +383,24 @@ static int dvbv5_open(stream_t *stream)
     dvr_fname = dvb_dev->path;
 
     dvb_dev = dvb_dev_seek_by_adapter(dvb, priv->opts->cfg_adapter, priv->opts->cfg_frontend, DVB_DEVICE_FRONTEND);
-    if (!dvb_dev) {
-        dvb_dev_free(dvb);
+    if (!dvb_dev)
         return STREAM_ERROR;
-    }
 
     if (!dvb_dev_open(dvb, dvb_dev->sysname, O_RDWR)) {
         dvb_dev_free(dvb);
         return STREAM_ERROR;
     }
+    if (lnb >= 0)
+        parms->lnb = dvb_sat_get_lnb(lnb);
+    if (priv->opts->cfg_sat_number >= 0)
+        parms->sat_number = priv->opts->cfg_sat_number;
+    parms->diseqc_wait = priv->opts->cfg_diseqc_wait;
+    parms->freq_bpf = priv->opts->cfg_freq_bpf;
+    parms->lna = priv->opts->cfg_lna;
 
-    parms->diseqc_wait = diseqc_wait;
-    parms->freq_bpf = freq_bpf;
-    parms->lna = lna;
-
-
-    dvb_fe_set_default_country(parms, priv->opts->cfg_cc);
+    r = dvb_fe_set_default_country(parms, priv->opts->cfg_cc);
+    if (r < 0)
+        MP_ERR(stream, "Failed to set the country code:%s\n", priv->opts->cfg_cc);
 
     if (parse(stream, parms, &vpid, &apid, &sid)) {
         dvb_dev_free(dvb);
@@ -357,10 +412,78 @@ static int dvbv5_open(stream_t *stream)
         return STREAM_ERROR;
     }
 
+    if (priv->opts->cfg_rec_psi) {
+        if (sid < 0) {
+            MP_ERR(stream, "Service id 0x%04x was not specified at the file\n",
+                sid);
+            dvb_dev_free(dvb);
+            return STREAM_ERROR;
+        }
+
+        sid_fd = dvb_dev_open(dvb, demux_dev, O_RDWR);
+        if (!sid_fd) {
+            MP_ERR(stream, "opening sid demux failed");
+            dvb_dev_free(dvb);
+            return STREAM_ERROR;
+        }
+        pmtpid = dvb_dev_dmx_get_pmt_pid(sid_fd, sid);
+        dvb_dev_close(sid_fd);
+        if (pmtpid <= 0) {
+            MP_ERR(stream, "couldn't find pmt-pid for sid %04x\n",
+                sid);
+
+            dvb_dev_free(dvb);
+            return STREAM_ERROR;
+        }
+
+        pat_fd = dvb_dev_open(dvb, demux_dev, O_RDWR);
+        if (!pat_fd) {
+            MP_ERR(stream, "opening pat demux failed");
+            dvb_dev_free(dvb);
+            return STREAM_ERROR;
+        }
+        if (dvb_dev_dmx_set_pesfilter(pat_fd, 0, DMX_PES_OTHER,
+                DMX_OUT_TS_TAP,
+                64 * 1024) < 0) {
+            dvb_dev_free(dvb);
+            return STREAM_ERROR;
+        }
+
+        pmt_fd = dvb_dev_open(dvb, demux_dev, O_RDWR);
+        if (!pmt_fd) {
+            MP_ERR(stream, "opening pmt demux failed");
+            dvb_dev_free(dvb);
+            return STREAM_ERROR;
+        }
+        if (dvb_dev_dmx_set_pesfilter(pmt_fd, pmtpid, DMX_PES_OTHER,
+                DMX_OUT_TS_TAP,
+                64 * 1024) < 0) {
+            dvb_dev_free(dvb);
+            return STREAM_ERROR;
+        }
+
+        /*
+         * SDT may also be needed in order to play some streams
+         */
+        sdt_fd = dvb_dev_open(dvb, demux_dev, O_RDWR);
+        if (!sdt_fd) {
+            MP_ERR(stream, "opening sdt demux failed");
+            dvb_dev_free(dvb);
+            return STREAM_ERROR;
+        }
+        if (dvb_dev_dmx_set_pesfilter(sdt_fd, 0x0011, DMX_PES_OTHER,
+                DMX_OUT_TS_TAP,
+                64 * 1024) < 0) {
+            dvb_dev_free(dvb);
+            return STREAM_ERROR;
+        }
+    }
+
       if (vpid >= 0) {
         video_fd = dvb_dev_open(dvb, demux_dev, O_RDWR);
         if (!video_fd) {
             MP_ERR(stream, "failed opening '%s'", demux_dev);
+            dvb_dev_free(dvb);
             return STREAM_ERROR;
         }
 
@@ -369,6 +492,7 @@ static int dvbv5_open(stream_t *stream)
         if (dvb_dev_dmx_set_pesfilter(video_fd, vpid, DMX_PES_VIDEO,
             DMX_OUT_TS_TAP,
             64 * 1024) < 0) {
+            dvb_dev_free(dvb);
             return STREAM_ERROR;
         }
     }
@@ -377,11 +501,13 @@ static int dvbv5_open(stream_t *stream)
         audio_fd = dvb_dev_open(dvb, demux_dev, O_RDWR);
         if (!audio_fd) {
             MP_ERR(stream, "failed opening '%s'", demux_dev);
+            dvb_dev_free(dvb);
             return STREAM_ERROR;
         }
         if (dvb_dev_dmx_set_pesfilter(audio_fd, apid, DMX_PES_AUDIO,
                 DMX_OUT_TS_TAP,
                 64 * 1024) < 0) {
+            dvb_dev_free(dvb);
             return STREAM_ERROR;
         }
     }
@@ -389,16 +515,19 @@ static int dvbv5_open(stream_t *stream)
     if (!check_frontend(stream, parms)) {
 
         MP_ERR(stream, "frontend doesn't lock");
+        dvb_dev_free(dvb);
         return STREAM_ERROR;
     }
 
     dvr_fd = dvb_dev_open(dvb, dvr_dev, O_RDONLY);
     if (!dvr_fd) {
         MP_ERR(stream, "failed opening '%s'", dvr_dev);
+        dvb_dev_free(dvb);
         return STREAM_ERROR;
     }
 
     priv->dvr_fd = dvr_fd;
+    priv->dvb = dvb;
 
     return STREAM_OK;
 }
@@ -409,3 +538,5 @@ const stream_info_t stream_info_dvbv5 = {
     .protocols = (const char *const[]){ "dvbv5", NULL },
     .stream_origin = STREAM_ORIGIN_UNSAFE,
 };
+
+// TODO timeouts
